@@ -1,5 +1,6 @@
 import { describe, expect, expectTypeOf, test } from "vitest";
 import * as z from "zod/v4";
+import type { ParsePayload } from "zod/v4/core";
 
 describe("basic refinement functionality", () => {
   test("should create a new schema instance when refining", () => {
@@ -460,33 +461,47 @@ describe("type refinement with type guards", () => {
   // });
 });
 
-test("when", () => {
-  const schema = z
-    .strictObject({
-      password: z.string().min(8),
-      confirmPassword: z.string(),
-      other: z.string(),
-    })
-    .refine(
-      (data) => {
-        // console.log("running check...");
-        // console.log(data);
-        // console.log(data.password);
-        return data.password === data.confirmPassword;
-      },
-      {
+describe("when", () => {
+  const baseSchema = z.strictObject({
+    password: z.string().min(8),
+    confirmPassword: z.string(),
+    other: z.string(),
+  });
+  const whenFn = (payload: ParsePayload): boolean => {
+    if (payload.value === undefined) return false;
+    if (payload.value === null) return false;
+    // no issues with confirmPassword or password
+    return payload.issues.every((iss) => iss.path?.[0] !== "confirmPassword" && iss.path?.[0] !== "password");
+  };
+
+  test.for([
+    [
+      "refine",
+      baseSchema.refine((data) => data.password === data.confirmPassword, {
         message: "Passwords do not match",
         path: ["confirmPassword"],
-        when(payload) {
-          if (payload.value === undefined) return false;
-          if (payload.value === null) return false;
-          // no issues with confirmPassword or password
-          return payload.issues.every((iss) => iss.path?.[0] !== "confirmPassword" && iss.path?.[0] !== "password");
+        when: whenFn,
+      }),
+    ],
+    [
+      "superRefine",
+      baseSchema.superRefine(
+        (data, ctx) => {
+          if (data.password !== data.confirmPassword) {
+            ctx.addIssue({
+              code: "custom",
+              message: "Passwords do not match",
+              path: ["confirmPassword"],
+            });
+          }
         },
-      }
-    );
-
-  expect(schema.safeParse(undefined)).toMatchInlineSnapshot(`
+        {
+          when: whenFn,
+        }
+      ),
+    ],
+  ] as const)("%s", ([_, schema]) => {
+    expect(schema.safeParse(undefined)).toMatchInlineSnapshot(`
     {
       "error": [ZodError: [
       {
@@ -499,7 +514,7 @@ test("when", () => {
       "success": false,
     }
   `);
-  expect(schema.safeParse(null)).toMatchInlineSnapshot(`
+    expect(schema.safeParse(null)).toMatchInlineSnapshot(`
     {
       "error": [ZodError: [
       {
@@ -512,13 +527,13 @@ test("when", () => {
       "success": false,
     }
   `);
-  expect(
-    schema.safeParse({
-      password: "asdf",
-      confirmPassword: "asdfg",
-      other: "qwer",
-    })
-  ).toMatchInlineSnapshot(`
+    expect(
+      schema.safeParse({
+        password: "asdf",
+        confirmPassword: "asdfg",
+        other: "qwer",
+      })
+    ).toMatchInlineSnapshot(`
     {
       "error": [ZodError: [
       {
@@ -536,13 +551,13 @@ test("when", () => {
     }
   `);
 
-  expect(
-    schema.safeParse({
-      password: "asdf",
-      confirmPassword: "asdfg",
-      other: 1234,
-    })
-  ).toMatchInlineSnapshot(`
+    expect(
+      schema.safeParse({
+        password: "asdf",
+        confirmPassword: "asdfg",
+        other: 1234,
+      })
+    ).toMatchInlineSnapshot(`
     {
       "error": [ZodError: [
       {
@@ -567,4 +582,30 @@ test("when", () => {
       "success": false,
     }
   `);
+
+    expect(
+      schema.safeParse({
+        password: "password1",
+        confirmPassword: "password2",
+        other: 1234,
+      })
+    ).toMatchObject({
+      success: false,
+      error: {
+        issues: [
+          {
+            code: "invalid_type",
+            expected: "string",
+            path: ["other"],
+            message: "Invalid input: expected string, received number",
+          },
+          {
+            code: "custom",
+            path: ["confirmPassword"],
+            message: "Passwords do not match",
+          },
+        ],
+      },
+    });
+  });
 });
